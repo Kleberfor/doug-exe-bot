@@ -314,4 +314,4 @@ app.listen(PORT, async () => {
 
   // Verifica/cria instância
   await createInstance();
-})();
+});
