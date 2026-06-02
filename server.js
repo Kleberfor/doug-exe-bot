@@ -18,6 +18,9 @@ const LLM_API_KEY = process.env.LLM_API_KEY;
 const LLM_MODEL = process.env.LLM_MODEL || 'deepseek-chat';
 const PORT = process.env.PORT || 3000;
 
+// IDs de mensagens já processadas (evita duplicatas)
+const processedMessages = new Set();
+
 function loadDougSkill() {
   try {
     const skill = readFileSync('./doug-exe/SKILL.md', 'utf-8');
@@ -115,22 +118,43 @@ const app = express();
 app.use(express.json());
 
 app.get('/', (req, res) => {
-  res.json({ status: 'online', bot: 'Doug.EXE', version: '1.1.0', instance: INSTANCE_NAME, llm: LLM_PROVIDER });
+  res.json({ status: 'online', bot: 'Doug.EXE', version: '1.2.0', instance: INSTANCE_NAME, llm: LLM_PROVIDER });
 });
 
 app.post('/webhook', async (req, res) => {
   res.sendStatus(200);
   const { event, data } = req.body;
-  console.log(`📩 Evento: ${event}`);
 
   if (event === 'MESSAGES_UPSERT' || event === 'messages.upsert') {
+    // Ignora mensagens enviadas pelo próprio bot
+    if (data?.key?.fromMe) {
+      console.log('⏭️  Mensagem própria, ignorando.');
+      return;
+    }
+
+    // Ignora mensagens duplicadas
+    const msgId = data?.key?.id;
+    if (msgId) {
+      if (processedMessages.has(msgId)) {
+        console.log(`⏭️  Mensagem ${msgId} já processada, ignorando.`);
+        return;
+      }
+      processedMessages.add(msgId);
+      // Limpa o cache após 10 minutos para não vazar memória
+      setTimeout(() => processedMessages.delete(msgId), 10 * 60 * 1000);
+    }
+
     const userMessage =
       data?.message?.conversation ||
       data?.message?.extendedTextMessage?.text ||
       data?.message?.imageMessage?.caption || '';
+
     const remoteJid = data?.key?.remoteJid;
+
     if (!userMessage || !remoteJid) return;
-    console.log(`💬 [${remoteJid}]: ${userMessage}`);
+
+    console.log(`📩 [${remoteJid}]: ${userMessage}`);
+
     try {
       const reply = await callLLM(userMessage, remoteJid);
       await sendWhatsAppMessage(remoteJid, reply);
@@ -145,7 +169,7 @@ app.post('/webhook', async (req, res) => {
 });
 
 app.listen(PORT, async () => {
-  console.log(`🤖 Doug.EXE rodando na porta ${PORT}`);
+  console.log(`🤖 Doug.EXE v1.2.0 rodando na porta ${PORT}`);
   console.log(`📡 Evolution: ${EVOLUTION_URL} | LLM: ${LLM_PROVIDER}`);
   await createInstance();
 });
