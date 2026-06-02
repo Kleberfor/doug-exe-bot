@@ -18,7 +18,6 @@ const LLM_API_KEY = process.env.LLM_API_KEY;
 const LLM_MODEL = process.env.LLM_MODEL || 'deepseek-chat';
 const PORT = process.env.PORT || 3000;
 
-// IDs de mensagens já processadas (evita duplicatas)
 const processedMessages = new Set();
 
 function loadDougSkill() {
@@ -118,7 +117,7 @@ const app = express();
 app.use(express.json());
 
 app.get('/', (req, res) => {
-  res.json({ status: 'online', bot: 'Doug.EXE', version: '1.2.0', instance: INSTANCE_NAME, llm: LLM_PROVIDER });
+  res.json({ status: 'online', bot: 'Doug.EXE', version: '1.3.0', instance: INSTANCE_NAME, llm: LLM_PROVIDER });
 });
 
 app.post('/webhook', async (req, res) => {
@@ -126,21 +125,28 @@ app.post('/webhook', async (req, res) => {
   const { event, data } = req.body;
 
   if (event === 'MESSAGES_UPSERT' || event === 'messages.upsert') {
-    // Ignora mensagens enviadas pelo próprio bot
+    const remoteJid = data?.key?.remoteJid || '';
+
+    // Ignora mensagens do próprio bot
     if (data?.key?.fromMe) {
-      console.log('⏭️  Mensagem própria, ignorando.');
+      console.log('⏭️  Própria mensagem, ignorando.');
       return;
     }
 
-    // Ignora mensagens duplicadas
+    // Ignora grupos (@g.us) e broadcasts (@broadcast)
+    if (remoteJid.endsWith('@g.us') || remoteJid.endsWith('@broadcast')) {
+      console.log(`⏭️  Grupo/broadcast ignorado: ${remoteJid}`);
+      return;
+    }
+
+    // Ignora duplicatas pelo ID da mensagem
     const msgId = data?.key?.id;
     if (msgId) {
       if (processedMessages.has(msgId)) {
-        console.log(`⏭️  Mensagem ${msgId} já processada, ignorando.`);
+        console.log(`⏭️  Duplicata ignorada: ${msgId}`);
         return;
       }
       processedMessages.add(msgId);
-      // Limpa o cache após 10 minutos para não vazar memória
       setTimeout(() => processedMessages.delete(msgId), 10 * 60 * 1000);
     }
 
@@ -148,8 +154,6 @@ app.post('/webhook', async (req, res) => {
       data?.message?.conversation ||
       data?.message?.extendedTextMessage?.text ||
       data?.message?.imageMessage?.caption || '';
-
-    const remoteJid = data?.key?.remoteJid;
 
     if (!userMessage || !remoteJid) return;
 
@@ -169,7 +173,7 @@ app.post('/webhook', async (req, res) => {
 });
 
 app.listen(PORT, async () => {
-  console.log(`🤖 Doug.EXE v1.2.0 rodando na porta ${PORT}`);
+  console.log(`🤖 Doug.EXE v1.3.0 rodando na porta ${PORT}`);
   console.log(`📡 Evolution: ${EVOLUTION_URL} | LLM: ${LLM_PROVIDER}`);
   await createInstance();
 });
