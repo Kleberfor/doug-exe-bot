@@ -5,14 +5,9 @@ import { config } from 'dotenv';
 import { fileURLToPath } from 'url';
 import { dirname, join } from 'path';
 
-// Carrega variáveis de ambiente do .env.bot (apenas local)
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = dirname(__filename);
 config({ path: join(__dirname, '.env.bot') });
-
-// ============================================
-// Configuração
-// ============================================
 
 const EVOLUTION_URL = process.env.EVOLUTION_API_URL;
 const API_KEY = process.env.EVOLUTION_API_KEY;
@@ -23,295 +18,134 @@ const LLM_API_KEY = process.env.LLM_API_KEY;
 const LLM_MODEL = process.env.LLM_MODEL || 'deepseek-chat';
 const PORT = process.env.PORT || 3000;
 
-// ============================================
-// Carregar SKILL.md e References
-// ============================================
-
 function loadDougSkill() {
   try {
     const skill = readFileSync('./doug-exe/SKILL.md', 'utf-8');
-
     const refsDir = './doug-exe/references';
     const refFiles = readdirSync(refsDir).filter(f => f.endsWith('.md'));
-    const references = refFiles
-      .map(f => readFileSync(`${refsDir}/${f}`, 'utf-8'))
-      .join('\n\n---\n\n');
-
+    const references = refFiles.map(f => readFileSync(`${refsDir}/${f}`, 'utf-8')).join('\n\n---\n\n');
     return { skill, references };
   } catch (err) {
-    console.error('Erro ao carregar SKILL.md ou references:', err.message);
+    console.error('Erro ao carregar SKILL.md:', err.message);
     process.exit(1);
   }
 }
 
 const { skill: DOUG_SKILL, references: DOUG_REFS } = loadDougSkill();
-
-// ============================================
-// Memória de conversas (por usuário)
-// ============================================
+const SYSTEM_PROMPT = DOUG_SKILL + '\n\n---\n\n# REFERÊNCIAS\n\n' + DOUG_REFS;
 
 const conversations = new Map();
 
 function getConversation(jid) {
-  if (!conversations.has(jid)) {
-    conversations.set(jid, []);
-  }
+  if (!conversations.has(jid)) conversations.set(jid, []);
   return conversations.get(jid);
 }
 
 function addToConversation(jid, role, content) {
   const conv = getConversation(jid);
   conv.push({ role, content });
-
-  // Mantém apenas as últimas 20 mensagens para não estourar tokens
-  if (conv.length > 20) {
-    conv.splice(0, conv.length - 20);
-  }
+  if (conv.length > 20) conv.splice(0, conv.length - 20);
 }
-
-// ============================================
-// Chamar LLM
-// ============================================
 
 async function callLLM(userMessage, jid) {
   addToConversation(jid, 'user', userMessage);
   const history = getConversation(jid);
-
-  if (LLM_PROVIDER === 'claude') {
-    return callClaude(history);
-  }
-  return callDeepSeek(history);
+  if (LLM_PROVIDER === 'claude') return callClaude(history, jid);
+  return callDeepSeek(history, jid);
 }
 
-async function callDeepSeek(history) {
+async function callDeepSeek(history, jid) {
   try {
-    const response = await axios.post(
-      LLM_API_URL,
-      {
-        model: LLM_MODEL,
-        max_tokens: 2048,
-        messages: [
-          { role: 'system', content: DOUG_SKILL + '\n\n---\n\n# REFERÊNCIAS DE CONTEÚDO\n\n' + DOUG_REFS },
-          ...history
-        ]
-      },
-      {
-        headers: {
-          'Authorization': `Bearer ${LLM_API_KEY}`,
-          'Content-Type': 'application/json'
-        }
-      }
-    );
-
-    const assistantMessage = response.data.choices[0].message.content;
-    addToConversation(history[history.length - 1]?.jid || 'unknown', 'assistant', assistantMessage);
-    return assistantMessage;
+    const response = await axios.post(LLM_API_URL, {
+      model: LLM_MODEL,
+      max_tokens: 2048,
+      messages: [{ role: 'system', content: SYSTEM_PROMPT }, ...history]
+    }, { headers: { 'Authorization': `Bearer ${LLM_API_KEY}`, 'Content-Type': 'application/json' } });
+    const msg = response.data.choices[0].message.content;
+    addToConversation(jid, 'assistant', msg);
+    return msg;
   } catch (err) {
     console.error('Erro DeepSeek:', err.response?.data || err.message);
-    return 'Desculpe, tive um problema técnico. Tente novamente em instantes.';
+    return 'Erro técnico. Tente novamente.';
   }
 }
 
-async function callClaude(history) {
+async function callClaude(history, jid) {
   try {
-    const response = await axios.post(
-      LLM_API_URL,
-      {
-        model: LLM_MODEL,
-        max_tokens: 2048,
-        system: DOUG_SKILL + '\n\n---\n\n# REFERÊNCIAS DE CONTEÚDO\n\n' + DOUG_REFS,
-        messages: history
-      },
-      {
-        headers: {
-          'x-api-key': LLM_API_KEY,
-          'anthropic-version': '2023-06-01',
-          'content-type': 'application/json'
-        }
-      }
-    );
-
-    const assistantMessage = response.data.content[0].text;
-    return assistantMessage;
+    const response = await axios.post(LLM_API_URL, {
+      model: LLM_MODEL, max_tokens: 2048, system: SYSTEM_PROMPT, messages: history
+    }, { headers: { 'x-api-key': LLM_API_KEY, 'anthropic-version': '2023-06-01', 'content-type': 'application/json' } });
+    const msg = response.data.content[0].text;
+    addToConversation(jid, 'assistant', msg);
+    return msg;
   } catch (err) {
     console.error('Erro Claude:', err.response?.data || err.message);
-    return 'Desculpe, tive um problema técnico. Tente novamente em instantes.';
+    return 'Erro técnico. Tente novamente.';
   }
 }
-
-// ============================================
-// Enviar mensagem via Evolution API
-// ============================================
 
 async function sendWhatsAppMessage(number, text) {
   try {
-    await axios.post(
-      `${EVOLUTION_URL}/message/sendText/${INSTANCE_NAME}`,
-      {
-        number,
-        text
-      },
-      {
-        headers: { apikey: API_KEY }
-      }
-    );
-    console.log(`✅ Mensagem enviada para ${number}`);
+    await axios.post(`${EVOLUTION_URL}/message/sendText/${INSTANCE_NAME}`,
+      { number, text }, { headers: { apikey: API_KEY } });
+    console.log(`✅ Enviado para ${number}`);
   } catch (err) {
-    console.error('Erro ao enviar mensagem:', err.response?.data || err.message);
+    console.error('Erro ao enviar:', err.response?.data || err.message);
   }
 }
-
-// ============================================
-// Criar instância na Evolution API
-// ============================================
 
 async function createInstance() {
   try {
-    console.log(`🔍 Verificando se instância "${INSTANCE_NAME}" existe...`);
-    const instances = await axios.get(
-      `${EVOLUTION_URL}/instance/fetchInstances`,
-      { headers: { apikey: API_KEY } }
-    );
-
+    const instances = await axios.get(`${EVOLUTION_URL}/instance/fetchInstances`, { headers: { apikey: API_KEY } });
     const exists = instances.data.some(i => i.name === INSTANCE_NAME);
     if (exists) {
       console.log(`✅ Instância "${INSTANCE_NAME}" já existe.`);
-      return true;
+    } else {
+      await axios.post(`${EVOLUTION_URL}/instance/create`,
+        { instanceName: INSTANCE_NAME, integration: 'WHATSAPP-BAILEYS' },
+        { headers: { apikey: API_KEY, 'Content-Type': 'application/json' } });
+      console.log(`✅ Instância criada!`);
     }
-
-    console.log(`📦 Criando instância "${INSTANCE_NAME}"...`);
-    await axios.post(
-      `${EVOLUTION_URL}/instance/create`,
-      {
-        instanceName: INSTANCE_NAME,
-        integration: 'WHATSAPP-BAILEYS'
-      },
-      {
-        headers: {
-          apikey: API_KEY,
-          'Content-Type': 'application/json'
-        }
-      }
-    );
-
-    console.log(`✅ Instância "${INSTANCE_NAME}" criada com sucesso!`);
-    console.log(`📱 Acesse o QR Code em: ${EVOLUTION_URL}/instance/connect/${INSTANCE_NAME}`);
-    return true;
   } catch (err) {
-    console.error('Erro ao criar instância:', err.response?.data || err.message);
-    return false;
+    console.error('Erro instância:', err.response?.data || err.message);
   }
 }
-
-// ============================================
-// Configurar Webhook
-// ============================================
-
-async function setupWebhook() {
-  try {
-    const webhookUrl = `http://localhost:${PORT}/webhook`;
-    console.log(`🔗 Configurando webhook para ${webhookUrl}...`);
-
-    await axios.post(
-      `${EVOLUTION_URL}/webhook/set/${INSTANCE_NAME}`,
-      {
-        enabled: true,
-        url: webhookUrl,
-        events: ['messages.upsert', 'connection.update'],
-        webhookBase64: false
-      },
-      {
-        headers: {
-          apikey: API_KEY,
-          'Content-Type': 'application/json'
-        }
-      }
-    );
-
-    console.log('✅ Webhook configurado!');
-  } catch (err) {
-    console.error('Erro ao configurar webhook:', err.response?.data || err.message);
-  }
-}
-
-// ============================================
-// Servidor Express
-// ============================================
 
 const app = express();
 app.use(express.json());
 
-// Health check
 app.get('/', (req, res) => {
-  res.json({
-    status: 'online',
-    bot: 'Doug.EXE',
-    version: '1.0.0',
-    instance: INSTANCE_NAME,
-    llm: LLM_PROVIDER
-  });
+  res.json({ status: 'online', bot: 'Doug.EXE', version: '1.1.0', instance: INSTANCE_NAME, llm: LLM_PROVIDER });
 });
 
-// Webhook receiver
 app.post('/webhook', async (req, res) => {
-  const { event, instance, data } = req.body;
+  res.sendStatus(200);
+  const { event, data } = req.body;
+  console.log(`📩 Evento: ${event}`);
 
-  // Log básico
-  console.log(`📩 Evento: ${event} | Instância: ${instance}`);
-
-  // Ignora mensagens enviadas pelo próprio bot
-  // if (data?.key?.fromMe) {
-    // return res.sendStatus(200);
-  }
-
-  if (event === 'messages.upsert') {
+  if (event === 'MESSAGES_UPSERT' || event === 'messages.upsert') {
     const userMessage =
       data?.message?.conversation ||
       data?.message?.extendedTextMessage?.text ||
-      '';
-
+      data?.message?.imageMessage?.caption || '';
     const remoteJid = data?.key?.remoteJid;
-
-    if (!userMessage || !remoteJid) {
-      // return res.sendStatus(200);
-    }
-
-    console.log(`💬 Mensagem de ${remoteJid}: ${userMessage}`);
-
+    if (!userMessage || !remoteJid) return;
+    console.log(`💬 [${remoteJid}]: ${userMessage}`);
     try {
-      // Chama o LLM com o Doug como persona
-      const llmResponse = await callLLM(userMessage, remoteJid);
-
-      // Envia a resposta
-      await sendWhatsAppMessage(remoteJid, llmResponse);
+      const reply = await callLLM(userMessage, remoteJid);
+      await sendWhatsAppMessage(remoteJid, reply);
     } catch (err) {
-      console.error('Erro no processamento:', err.message);
+      console.error('Erro:', err.message);
     }
   }
 
-  if (event === 'connection.update') {
-    console.log(`🔄 Status da conexão: ${data?.state || 'desconhecido'}`);
+  if (event === 'CONNECTION_UPDATE' || event === 'connection.update') {
+    console.log(`🔄 Conexão: ${data?.state}`);
   }
-
-  res.sendStatus(200);
 });
 
-// ============================================
-// Iniciar servidor
-// ============================================
-
 app.listen(PORT, async () => {
-  console.log('');
-  console.log('🤖 ============================================');
-  console.log('🤖  Doug.EXE Bot - Mentoria em Marketing Digital');
-  console.log('🤖 ============================================');
-  console.log('');
-  console.log(`🌐 Servidor rodando na porta ${PORT}`);
-  console.log(`📡 Evolution API: ${EVOLUTION_URL}`);
-  console.log(`🧠 LLM: ${LLM_PROVIDER} (${LLM_MODEL})`);
-  console.log(`📱 Instância: ${INSTANCE_NAME}`);
-  console.log('');
-
-  // Verifica/cria instância
+  console.log(`🤖 Doug.EXE rodando na porta ${PORT}`);
+  console.log(`📡 Evolution: ${EVOLUTION_URL} | LLM: ${LLM_PROVIDER}`);
   await createInstance();
 });
