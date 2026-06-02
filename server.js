@@ -260,8 +260,8 @@ app.post('/webhook', async (req, res) => {
   console.log(`📩 Evento: ${event} | Instância: ${instance}`);
 
   // Ignora mensagens enviadas pelo próprio bot
-  if (data?.key?.fromMe) {
-    return res.sendStatus(200);
+  // if (data?.key?.fromMe) {
+    // return res.sendStatus(200);
   }
 
   if (event === 'messages.upsert') {
@@ -273,7 +273,7 @@ app.post('/webhook', async (req, res) => {
     const remoteJid = data?.key?.remoteJid;
 
     if (!userMessage || !remoteJid) {
-      return res.sendStatus(200);
+      // return res.sendStatus(200);
     }
 
     console.log(`💬 Mensagem de ${remoteJid}: ${userMessage}`);
